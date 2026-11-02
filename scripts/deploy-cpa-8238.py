@@ -183,6 +183,8 @@ def main():
     parser.add_argument('--plugin-source', required=True, type=Path)
     parser.add_argument('--plugin-sha', required=True)
     parser.add_argument('--smoke-model', help='Optional exact model ID; otherwise select an advertised text model')
+    parser.add_argument('--allow-unverified-upstream', action='store_true',
+                        help='Explicit operator waiver: keep a healthy deployment when existing upstream credentials cannot pass inference')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('run this release script as root')
@@ -314,8 +316,13 @@ def main():
         report['image_id'] = live['Image']
         print('Checking authenticated Responses inference and recent service logs', flush=True)
         smoke_model = select_smoke_model(report['production']['model_ids'], args.smoke_model)
-        status, _, body = request(base, '/v1/responses', keys[0],
-                                  {'model': smoke_model, 'input': 'Reply exactly OK.', 'reasoning': {'effort': 'low'}, 'stream': False}, timeout=90)
+        try:
+            status, _, body = request(base, '/v1/responses', keys[0],
+                                      {'model': smoke_model, 'input': 'Reply exactly OK.', 'reasoning': {'effort': 'low'}, 'stream': False}, timeout=90)
+        except (OSError, ValueError) as error:
+            if not args.allow_unverified_upstream:
+                raise
+            status, body = None, {'error': {'type': type(error).__name__, 'code': 'smoke_transport_failure'}}
         output_text = ' '.join(part.get('text', '') for item in body.get('output', []) if isinstance(item, dict) for part in item.get('content', []) if isinstance(part, dict))
         report['inference'] = {'model': smoke_model, 'status': status, 'response_status': body.get('status'), 'output_contains_ok': 'OK' in output_text,
                                'error_type': (body.get('error') or {}).get('type'),
@@ -325,13 +332,16 @@ def main():
         report['log_review'] = {'error_lines': sum('level=error' in line for line in logs.splitlines()), 'fatal_or_panic': bool(re.search(r'level=fatal|panic:', logs))}
         if report['log_review']['fatal_or_panic']:
             raise RuntimeError('fatal error in production container logs')
-        if status != 200 or body.get('status') != 'completed' or not report['inference']['output_contains_ok']:
+        inference_passed = status == 200 and body.get('status') == 'completed' and report['inference']['output_contains_ok']
+        report['inference']['passed'] = inference_passed
+        report['inference']['operator_waiver'] = args.allow_unverified_upstream and not inference_passed
+        if not inference_passed and not args.allow_unverified_upstream:
             write_json(release / 'verification.json', report)
             raise RuntimeError(f'live inference smoke failed with HTTP {status}')
         if inspect('cli-proxy-api-8237')['Id'] != other_before:
             raise RuntimeError('8237 changed concurrently; investigate before declaring completion')
         report['unrelated_8237_unchanged'] = True
-        report['result'] = 'published'
+        report['result'] = 'published' if inference_passed else 'published_with_unverified_upstream'
         write_json(release / 'verification.json', report)
         print(json.dumps(report), flush=True)
     except BaseException:
