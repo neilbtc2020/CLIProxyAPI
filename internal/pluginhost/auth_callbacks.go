@@ -27,10 +27,11 @@ type rpcHostAuthListResponse struct {
 }
 
 type rpcHostAuthGetResponse struct {
-	AuthIndex string          `json:"auth_index"`
-	Name      string          `json:"name,omitempty"`
-	Path      string          `json:"path,omitempty"`
-	JSON      json.RawMessage `json:"json"`
+	ProxyRevision string          `json:"proxy_revision,omitempty"`
+	AuthIndex     string          `json:"auth_index"`
+	Name          string          `json:"name,omitempty"`
+	Path          string          `json:"path,omitempty"`
+	JSON          json.RawMessage `json:"json"`
 }
 
 func (h *Host) SetAuthManager(manager *coreauth.Manager) {
@@ -87,10 +88,11 @@ func (h *Host) callHostAuthGet(ctx context.Context, request []byte) ([]byte, err
 	}
 	path := strings.TrimSpace(authAttribute(auth, "path"))
 	return marshalRPCResult(rpcHostAuthGetResponse{
-		AuthIndex: authIndex,
-		Name:      name,
-		Path:      path,
-		JSON:      json.RawMessage(rawJSON),
+		ProxyRevision: coreauth.ProxyUpdateRevision(auth, rawJSON),
+		AuthIndex:     authIndex,
+		Name:          name,
+		Path:          path,
+		JSON:          json.RawMessage(rawJSON),
 	})
 }
 
@@ -397,8 +399,16 @@ func (h *Host) buildAuthsFromFileData(ctx context.Context, path string, data []b
 		}
 	}
 	metadata := make(map[string]any)
-	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("invalid auth file JSON")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if errUnmarshal := decoder.Decode(&metadata); errUnmarshal != nil {
 		return nil, fmt.Errorf("invalid auth file: %w", errUnmarshal)
+	}
+	if metadata == nil {
+		return nil, fmt.Errorf("auth file must contain an object")
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
 	if errWeight := coreauth.ValidateAuthWeight(&coreauth.Auth{Metadata: metadata}); errWeight != nil {
@@ -536,6 +546,12 @@ func (h *Host) buildAuthsFromFileData(ctx context.Context, path string, data []b
 		Metadata:  metadata,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if proxyURL, ok := metadata["proxy_url"].(string); ok {
+		auth.ProxyURL = strings.TrimSpace(proxyURL)
+	}
+	if prefix, ok := metadata["prefix"].(string); ok {
+		auth.Prefix = strings.Trim(strings.TrimSpace(prefix), "/")
 	}
 	if existing != nil {
 		preserveExistingAuthState(auth, existing)

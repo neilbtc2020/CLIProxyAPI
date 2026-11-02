@@ -1450,7 +1450,10 @@ func TestServiceHeartbeatFailoverDoesNotDrainBlockingScope(t *testing.T) {
 	}
 	select {
 	case <-secondSubscribe:
-	case <-time.After(time.Second):
+	// Reconnection includes an initial jittered backoff of up to one second.
+	// Allow that backoff plus scheduling time; the old scope stays blocked, so
+	// a subscriber that drains it still cannot satisfy this liveness assertion.
+	case <-time.After(3 * homeSubscriberRetryInitial):
 		t.Fatal("new subscription did not start while the old scope remained active")
 	}
 	service.homeMu.Lock()

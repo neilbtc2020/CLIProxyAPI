@@ -919,6 +919,8 @@ type HostAuthGetRequest struct {
 
 // HostAuthGetResponse returns credential JSON resolved by auth index.
 type HostAuthGetResponse struct {
+	// ProxyRevision binds proxy changes to the current disk and runtime snapshot.
+	ProxyRevision string `json:"proxy_revision,omitempty"`
 	// AuthIndex identifies the credential index.
 	AuthIndex string `json:"auth_index"`
 	// Name is the credential file name or runtime identifier.
@@ -927,6 +929,19 @@ type HostAuthGetResponse struct {
 	Path string `json:"path,omitempty"`
 	// JSON contains the credential JSON payload.
 	JSON json.RawMessage `json:"json"`
+}
+
+// HostAuthPatchProxyRequest changes only a physical account's proxy after a
+// successful revision comparison, preserving its credential and routing fields.
+type HostAuthPatchProxyRequest struct {
+	AuthIndex string `json:"auth_index"`
+	Revision  string `json:"revision"`
+	ProxyURL  string `json:"proxy_url"`
+}
+
+// HostAuthPatchProxyResponse contains a credential-free mutation outcome.
+type HostAuthPatchProxyResponse struct {
+	Status string `json:"status"`
 }
 
 // HostAuthGetRuntimeResponse returns runtime credential information by auth index.

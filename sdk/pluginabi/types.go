@@ -142,6 +142,7 @@ const (
 	MethodHostAuthList           = "host.auth.list"
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
+	MethodHostAuthPatchProxy     = "host.auth.patch_proxy"
 	MethodHostAuthSave           = "host.auth.save"
 	MethodHostAuthModels         = "host.auth.models"
 	MethodHostAffinityLookup     = "host.affinity.lookup"

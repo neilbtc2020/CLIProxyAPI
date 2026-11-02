@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 )
@@ -22,6 +23,14 @@ func ApplyAuthPriorityMetadata(auth *Auth, metadata map[string]any) {
 	switch value := rawPriority.(type) {
 	case float64:
 		priority = strconv.Itoa(int(value))
+	case json.Number:
+		if integer, err := value.Int64(); err == nil {
+			priority = strconv.FormatInt(integer, 10)
+		} else if number, err := value.Float64(); err == nil {
+			priority = strconv.Itoa(int(number))
+		} else {
+			return
+		}
 	case string:
 		priority = strings.TrimSpace(value)
 		if _, errAtoi := strconv.Atoi(priority); errAtoi != nil {

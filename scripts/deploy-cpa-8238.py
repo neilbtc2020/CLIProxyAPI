@@ -249,8 +249,8 @@ def main():
             cwd=repo, log=release / 'core-builder.log')
     command(['docker', 'run', '--rm', '--cpus', '4', '-e', 'GOMAXPROCS=4', builder,
              'go', 'test', '-race', './internal/runtime/executor/helps', './internal/runtime/executor',
-             './internal/thinking', './internal/translator/codex/openai/chat-completions', './sdk/cliproxy/auth',
-             '-run', 'Test.*(Codex|ToolResultsSurviveInterleaved|BootstrapOverload)',
+             './internal/thinking', './internal/translator/codex/openai/chat-completions', './sdk/cliproxy/auth', './internal/pluginhost',
+             '-run', 'Test.*(Codex|ToolResultsSurviveInterleaved|BootstrapOverload|ProxyUpdate|HostProxy|ReviewProxy|ApplyAuthPriorityMetadata)',
              '-count=1'], log=release / 'core-fingerprint-tests.log')
     command(['docker', 'build', '-t', image, *build_args, '.'], cwd=repo, log=release / 'core-image.log')
     plugin_tree = release / 'plugin-source'
