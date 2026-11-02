@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
-	codexOriginator            = "codex-tui"
+	codexUserAgent             = helps.CodexUserAgent
+	codexOriginator            = helps.CodexOriginator
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 )
@@ -94,6 +94,9 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	if codexAccountFingerprintEnabled(req.Context(), e.cfg, auth, req.Header) {
+		helps.BindCodexInstallationHeaders(req.Header, helps.CodexIdentityForAuth(auth))
+	}
 	alignCodexContentEncoding(req)
 	return nil
 }
@@ -158,6 +161,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
+	if codexAccountFingerprintEnabled(ctx, e.cfg, auth, headers) {
+		rawJSON = helps.ApplyCodexFingerprintMetadata(rawJSON, codexFingerprintSourceHeaders(ctx, headers), helps.CodexIdentityForAuth(auth))
+	}
 	rawJSON = helps.FinalizePayload(ctx, rawJSON)
 	wireBody := rawJSON
 	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && auth != nil &&
@@ -559,8 +565,18 @@ func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config, auth *cl
 	if headers == nil || cfg == nil || isCodexCloakingDisabled(cfg, auth) {
 		return
 	}
-	headers.Set("User-Agent", codexUserAgent)
+	userAgent := codexUserAgent
+	if !codexAuthUsesAPIKey(auth) {
+		identity := helps.CodexIdentityForAuth(auth)
+		userAgent = identity.UserAgent
+		helps.BindCodexInstallationHeaders(headers, identity)
+	}
+	for _, name := range []string{"User-Agent", "Originator", "Version"} {
+		deleteHeaderCaseInsensitive(headers, name)
+	}
+	headers.Set("User-Agent", userAgent)
 	headers.Set("Originator", codexOriginator)
+	headers.Set("Version", helps.CodexClientVersion)
 }
 
 func normalizeCodexInstructions(body []byte, nativeRequest ...bool) []byte {
@@ -758,4 +774,22 @@ func codexImageGenerationToolModel(body []byte) string {
 		}
 	}
 	return codexDefaultImageToolModel
+}
+
+// codexAccountFingerprintEnabled preserves the existing API-key, SIWC and
+// explicit passthrough contracts while binding ordinary OAuth accounts.
+func codexAccountFingerprintEnabled(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, headers http.Header) bool {
+	return cfg != nil && auth != nil && !codexAuthUsesAPIKey(auth) &&
+		!isCodexCloakingDisabled(cfg, auth) && !codexUseSIWCForRequest(ctx, auth, headers) &&
+		helps.CodexAccountIdentitySeed(auth) != ""
+}
+
+func codexFingerprintSourceHeaders(ctx context.Context, headers http.Header) http.Header {
+	if headers != nil {
+		return headers
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		return ginCtx.Request.Header
+	}
+	return nil
 }

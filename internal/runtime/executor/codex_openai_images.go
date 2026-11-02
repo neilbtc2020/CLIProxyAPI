@@ -124,6 +124,9 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	reporter.SetTranslatedReasoningEffort(body, "codex")
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
+		if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {
+			helps.ApplyCodexFingerprintHeaders(request.Header, body, strings.HasSuffix(request.URL.Path, "/responses/compact"), false)
+		}
 		applyModelHeaderOverrides(request.Header, mainModel)
 		alignCodexContentEncoding(request)
 	}
@@ -231,6 +234,9 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	reporter.SetTranslatedReasoningEffort(body, "codex")
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
+		if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {
+			helps.ApplyCodexFingerprintHeaders(request.Header, body, strings.HasSuffix(request.URL.Path, "/responses/compact"), false)
+		}
 		applyModelHeaderOverrides(request.Header, mainModel)
 		alignCodexContentEncoding(request)
 	}

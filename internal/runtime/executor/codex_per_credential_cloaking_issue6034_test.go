@@ -268,9 +268,10 @@ func TestCodexPerCredentialDisableCloaking_OAuthUnaffectedByAPIKeyOverride(t *te
 
 	applyCodexHeadersFromSources(req, oauthAuth, "oauth-token", false, cfg, nil)
 
-	// OAuth credential must remain cloaked with official Codex identity
-	if got := req.Header.Get("User-Agent"); got != codexUserAgent {
-		t.Errorf("OAuth User-Agent = %q, want %q", got, codexUserAgent)
+	// The API-key override must not disable this OAuth account's own identity.
+	const wantAccountUA = "codex-tui/0.166.0 (Mac OS 26.5.1; arm64) unknown (codex-tui; 0.166.0)"
+	if got := req.Header.Get("User-Agent"); got != wantAccountUA {
+		t.Errorf("OAuth User-Agent = %q, want %q", got, wantAccountUA)
 	}
 	if got := req.Header.Get("Originator"); got != codexOriginator {
 		t.Errorf("OAuth Originator = %q, want %q", got, codexOriginator)

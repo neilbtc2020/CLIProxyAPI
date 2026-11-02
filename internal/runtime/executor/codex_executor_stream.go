@@ -108,6 +108,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
+		if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {
+			helps.ApplyCodexFingerprintHeaders(request.Header, upstreamBody, strings.HasSuffix(request.URL.Path, "/responses/compact"), false)
+		}
 		applyCodexRoutingHint(ctx, request.Header, auth, baseModel, upstreamBody, opts.Headers)
 		applyModelHeaderOverrides(request.Header, baseModel)
 		alignCodexContentEncoding(request)

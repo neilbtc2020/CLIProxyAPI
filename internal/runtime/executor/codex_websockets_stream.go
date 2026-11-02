@@ -927,8 +927,14 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if useSIWC {
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
+	if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {
+		body = helps.ApplyCodexFingerprintMetadata(body, codexFingerprintSourceHeaders(ctx, opts.Headers), helps.CodexIdentityForAuth(auth))
+	}
 	body = finalizePayload(body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
+	if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {
+		helps.ApplyCodexFingerprintHeaders(wsHeaders, body, false, true)
+	}
 	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 
