@@ -134,7 +134,20 @@ def verify_service(base, admin, api_key, sha, plugin_version):
         raise RuntimeError('unauthenticated API access was not rejected')
     return {'health': 'ok', 'commit': commit, 'plugin_version': plugin_version,
             'codex_version': values['version'], 'models': len(models['data']),
+            'model_ids': [item['id'] for item in models['data'] if isinstance(item.get('id'), str)],
             'unauthenticated_status': unauth}
+
+
+def select_smoke_model(available, requested):
+    if requested:
+        if requested not in available:
+            raise RuntimeError('requested smoke model is not advertised by this instance')
+        return requested
+    for preferred in ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-6-luna']:
+        for model in available:
+            if model.rsplit('/', 1)[-1] == preferred:
+                return model
+    raise RuntimeError('no supported text model is available for inference verification')
 
 
 def prepare_plugin_config(config, version):
@@ -169,7 +182,7 @@ def main():
     parser.add_argument('--sha', required=True)
     parser.add_argument('--plugin-source', required=True, type=Path)
     parser.add_argument('--plugin-sha', required=True)
-    parser.add_argument('--smoke-model', default='gpt-5.5')
+    parser.add_argument('--smoke-model', help='Optional exact model ID; otherwise select an advertised text model')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('run this release script as root')
@@ -300,10 +313,11 @@ def main():
             raise RuntimeError('new container restarted or was killed')
         report['image_id'] = live['Image']
         print('Checking authenticated Responses inference and recent service logs', flush=True)
+        smoke_model = select_smoke_model(report['production']['model_ids'], args.smoke_model)
         status, _, body = request(base, '/v1/responses', keys[0],
-                                  {'model': args.smoke_model, 'input': 'Reply exactly OK.', 'reasoning': {'effort': 'low'}, 'stream': False}, timeout=90)
+                                  {'model': smoke_model, 'input': 'Reply exactly OK.', 'reasoning': {'effort': 'low'}, 'stream': False}, timeout=90)
         output_text = ' '.join(part.get('text', '') for item in body.get('output', []) if isinstance(item, dict) for part in item.get('content', []) if isinstance(part, dict))
-        report['inference'] = {'status': status, 'response_status': body.get('status'), 'output_contains_ok': 'OK' in output_text,
+        report['inference'] = {'model': smoke_model, 'status': status, 'response_status': body.get('status'), 'output_contains_ok': 'OK' in output_text,
                                'error_type': (body.get('error') or {}).get('type'),
                                'error_code': (body.get('error') or {}).get('code')}
         command(['docker', 'logs', CONTAINER], log=release / 'production-container.log')
