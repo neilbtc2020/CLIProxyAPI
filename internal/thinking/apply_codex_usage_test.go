@@ -350,6 +350,7 @@ func TestApplyThinkingLogsNativeResponsesEffectiveEffort(t *testing.T) {
 		wantLevel    thinking.ThinkingLevel
 		wantMode     thinking.ThinkingMode
 		wantBaseline thinking.ThinkingLevel
+		wantBody     string
 	}{
 		{
 			name:       "update overrides top-level baseline",
@@ -377,9 +378,10 @@ func TestApplyThinkingLogsNativeResponsesEffectiveEffort(t *testing.T) {
 			wantEffort: "xhigh", wantLevel: thinking.LevelXHigh, wantMode: thinking.ModeLevel,
 		},
 		{
-			name:       "update disables thinking",
+			name:       "unsupported disabled update uses model minimum",
 			body:       `{"model":"gpt-6-sol","reasoning":{"effort":"high"},"input":[{"type":"configuration_update","reasoning":{"effort":"none"}}]}`,
-			wantEffort: "none", wantMode: thinking.ModeNone, wantBaseline: thinking.LevelHigh,
+			wantBody:   `{"model":"gpt-6-sol","reasoning":{"effort":"high"},"input":[{"type":"configuration_update","reasoning":{"effort":"low"}}]}`,
+			wantEffort: "low", wantLevel: thinking.LevelLow, wantMode: thinking.ModeLevel, wantBaseline: thinking.LevelHigh,
 		},
 	}
 	for _, tc := range tests {
@@ -406,8 +408,12 @@ func TestApplyThinkingLogsNativeResponsesEffectiveEffort(t *testing.T) {
 					if err != nil {
 						t.Fatalf("ApplyThinking() error = %v", err)
 					}
-					if !bytes.Equal(applied, body) {
-						t.Fatalf("native Responses body changed: got %s, want %s", applied, body)
+					wantBody := body
+					if tc.wantBody != "" {
+						wantBody = []byte(tc.wantBody)
+					}
+					if !bytes.Equal(applied, wantBody) {
+						t.Fatalf("native Responses body mismatch: got %s, want %s", applied, wantBody)
 					}
 					if got := thinking.ExtractTranslatedReasoningEffort(applied, "codex"); got != tc.wantEffort {
 						t.Errorf("effective effort = %q, want %q", got, tc.wantEffort)
@@ -423,8 +429,12 @@ func TestApplyThinkingLogsNativeResponsesEffectiveEffort(t *testing.T) {
 								continue
 							}
 							found = true
+							wantMode, wantLevel := tc.wantMode, tc.wantLevel
+							if tc.wantBody != "" && message == "thinking: original config from request |" {
+								wantMode, wantLevel = thinking.ModeNone, ""
+							}
 							if entry.Level != log.DebugLevel || entry.Data["provider"] != "codex" || entry.Data["model"] != "gpt-6-sol" ||
-								entry.Data["mode"] != tc.wantMode || entry.Data["budget"] != 0 || entry.Data["level"] != tc.wantLevel {
+								entry.Data["mode"] != wantMode || entry.Data["budget"] != 0 || entry.Data["level"] != wantLevel {
 								t.Errorf("unexpected native Responses log %q fields: %v", message, entry.Data)
 							}
 							baseline, hasBaseline := entry.Data["baseline_level"]

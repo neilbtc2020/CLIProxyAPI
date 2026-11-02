@@ -294,11 +294,26 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 		// Do not rebuild a malformed target from a separate source update.
 		return body, nil
 	}
+	nativeSourceBody := body
+	// Keep valid native baselines and independent updates. Unsupported disabled
+	// effort still needs the canonical minimum, including updates with a suffix.
+	if nativeResponses && providerFormat == "codex" && !isPluginApplier {
+		var err error
+		body, err = normalizeNativeCodexNoneEffort(body, modelInfo, applier)
+		if err != nil {
+			return body, err
+		}
+	}
 	if nativeResponses && !suffixResult.HasSuffix {
-		// Native Responses keeps the top-level baseline and in-turn updates as-is.
-		// Log the effective effort without validating or rewriting the payload.
 		if log.IsLevelEnabled(log.DebugLevel) && (modelInfo.Thinking != nil || modelInfo.UserDefined) {
-			if config := extractCodexUsageConfig(body); hasThinkingConfig(config) {
+			for _, snapshot := range []struct {
+				message string
+				body    []byte
+			}{{"thinking: original config from request |", nativeSourceBody}, {"thinking: processed config to apply |", body}} {
+				config := extractCodexUsageConfig(snapshot.body)
+				if !hasThinkingConfig(config) {
+					continue
+				}
 				fields := log.Fields{
 					"provider": providerFormat,
 					"model":    modelInfo.ID,
@@ -306,12 +321,10 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 					"budget":   config.Budget,
 					"level":    config.Level,
 				}
-				if baseline := extractCodexConfig(body); baseline.Mode == ModeLevel {
+				if baseline := extractCodexConfig(snapshot.body); baseline.Mode == ModeLevel {
 					fields["baseline_level"] = baseline.Level
 				}
-				entry := log.WithFields(fields)
-				entry.Debug("thinking: original config from request |")
-				entry.Debug("thinking: processed config to apply |")
+				log.WithFields(fields).Debug(snapshot.message)
 			}
 		}
 		return body, nil

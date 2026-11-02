@@ -114,6 +114,7 @@ func TestSanitizeCodexInputItemIDsAvoidsNormalizationCollisions(t *testing.T) {
 		{name: "custom tool call", itemType: "custom_tool_call", prefix: "ctc_"},
 		{name: "custom tool call output", itemType: "custom_tool_call_output", prefix: "ctco_"},
 		{name: "tool search call", itemType: "tool_search_call", prefix: "tsc_"},
+		{name: "web search call", itemType: "web_search_call", prefix: "ws_"},
 	} {
 		for _, idCase := range []struct {
 			name      string
@@ -169,7 +170,7 @@ func TestSanitizeCodexInputItemIDsAvoidsNormalizationCollisions(t *testing.T) {
 }
 
 func TestSanitizeCodexInputItemIDsNormalizesLegacyToolSearchCallIDs(t *testing.T) {
-	original := []byte(`{"input":[` +
+	original := []byte(`{"store":true,"input":[` +
 		`{"type":"reasoning","id":"rs_signed","encrypted_content":"gAAAA-opaque-signature","summary":[]},` +
 		`{"type":"tool_search_call","id":"ts_call_4000860","call_id":"call_4000860","execution":"client","status":"completed","arguments":{"query":"agents"}},` +
 		`{"type":"tool_search_output","id":"tso_call_4000860","call_id":"call_4000860","execution":"client","status":"completed","tools":[]}` +
@@ -266,7 +267,7 @@ func TestSanitizeCodexInputItemIDsDropsOverlongEncryptedReasoningItem(t *testing
 	longReasoningID := "rs_" + strings.Repeat("a", 64)
 	shortReasoningID := "rs_" + strings.Repeat("b", 48)
 	longCallID := strings.Repeat("call-item-", 8)
-	body := []byte(`{"input":[` +
+	body := []byte(`{"store":true,"input":[` +
 		`{"type":"message","id":"msg-1","role":"user","content":"before"},` +
 		`{"type":"reasoning","id":"` + longReasoningID + `","encrypted_content":"gAAAA-encrypted","summary":[{"type":"summary_text","text":"drop me"}]},` +
 		`{"type":"reasoning","id":"` + shortReasoningID + `","encrypted_content":"gAAAA-encrypted","summary":[]},` +

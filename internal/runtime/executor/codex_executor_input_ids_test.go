@@ -51,32 +51,36 @@ func TestCodexExecutorExecuteStreamSanitizesOverlongInputItemIDs(t *testing.T) {
 	for range result.Chunks {
 	}
 
-	if input := gjson.GetBytes(gotBody, "input").Array(); len(input) != 3 {
-		t.Fatalf("upstream input length = %d, want 3: %s", len(input), gotBody)
+	if input := gjson.GetBytes(gotBody, "input").Array(); len(input) != 4 {
+		t.Fatalf("upstream input length = %d, want 4: %s", len(input), gotBody)
 	}
-	if gotType := gjson.GetBytes(gotBody, "input.0.type").String(); gotType != "function_call" {
-		t.Fatalf("input.0.type = %q, want function_call: %s", gotType, gotBody)
+	if gjson.GetBytes(gotBody, "input.0.id").Exists() || gjson.GetBytes(gotBody, "input.0.encrypted_content").String() != encryptedContent {
+		t.Fatal("stateless reasoning must retain its ciphertext without the external ID")
+	}
+
+	if gotType := gjson.GetBytes(gotBody, "input.1.type").String(); gotType != "function_call" {
+		t.Fatalf("input.1.type = %q, want function_call: %s", gotType, gotBody)
 	}
 
 	for index, testCase := range []struct {
 		path       string
 		originalID string
 	}{
-		{path: "input.0.id", originalID: longCallItemID},
-		{path: "input.1.id", originalID: longOutputItemID},
+		{path: "input.1.id", originalID: longCallItemID},
+		{path: "input.2.id", originalID: longOutputItemID},
 	} {
 		actual := gjson.GetBytes(gotBody, testCase.path).String()
 		if len([]rune(actual)) > 64 || actual == testCase.originalID {
 			t.Fatalf("input.%d.id was not shortened to at most 64 characters: %q", index, actual)
 		}
 	}
-	if got := gjson.GetBytes(gotBody, "input.0.call_id").String(); got != "call-1" {
+	if got := gjson.GetBytes(gotBody, "input.1.call_id").String(); got != "call-1" {
 		t.Fatalf("function call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(gotBody, "input.1.call_id").String(); got != "call-1" {
+	if got := gjson.GetBytes(gotBody, "input.2.call_id").String(); got != "call-1" {
 		t.Fatalf("function call output call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(gotBody, "input.2.id").String(); got != "msg_item_74ec40c883248ebb4885ec84" {
+	if got := gjson.GetBytes(gotBody, "input.3.id").String(); got != "msg_item_74ec40c883248ebb4885ec84" {
 		t.Fatalf("message input item ID was not normalized: %q", got)
 	}
 }

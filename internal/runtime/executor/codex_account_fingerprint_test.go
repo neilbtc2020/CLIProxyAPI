@@ -80,7 +80,11 @@ func captureCodexFingerprintFlow(t *testing.T, flow string, cfg *config.Config, 
 	if flow == "compact" {
 		opts.Alt = "responses/compact"
 	}
-	req := cliproxyexecutor.Request{Model: "gpt-5.5", Payload: body}
+	model := gjson.GetBytes(body, "model").String()
+	if model == "" {
+		model = "gpt-5.5"
+	}
+	req := cliproxyexecutor.Request{Model: model, Payload: body}
 	if strings.HasSuffix(flow, "stream") {
 		result, err := runner.ExecuteStream(context.Background(), auth, req, opts)
 		if err != nil {

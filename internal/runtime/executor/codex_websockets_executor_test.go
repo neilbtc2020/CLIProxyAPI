@@ -67,34 +67,38 @@ func TestBuildCodexWebsocketRequestBodySanitizesOverlongInputItemIDs(t *testing.
 	first := buildCodexWebsocketRequestBody(body)
 	second := buildCodexWebsocketRequestBody(body)
 
-	if input := gjson.GetBytes(first, "input").Array(); len(input) != 3 {
-		t.Fatalf("input length = %d, want 3: %s", len(input), first)
+	if input := gjson.GetBytes(first, "input").Array(); len(input) != 4 {
+		t.Fatalf("input length = %d, want 4: %s", len(input), first)
 	}
-	if gotType := gjson.GetBytes(first, "input.0.type").String(); gotType != "function_call" {
-		t.Fatalf("input.0.type = %q, want function_call: %s", gotType, first)
+	if gjson.GetBytes(first, "input.0.id").Exists() || gjson.GetBytes(first, "input.0.encrypted_content").String() != "gAAAA-encrypted" {
+		t.Fatal("stateless reasoning must retain its ciphertext without the external ID")
 	}
 
-	shortCallItemID := gjson.GetBytes(first, "input.0.id").String()
-	shortOutputItemID := gjson.GetBytes(first, "input.1.id").String()
+	if gotType := gjson.GetBytes(first, "input.1.type").String(); gotType != "function_call" {
+		t.Fatalf("input.1.type = %q, want function_call: %s", gotType, first)
+	}
+
+	shortCallItemID := gjson.GetBytes(first, "input.1.id").String()
+	shortOutputItemID := gjson.GetBytes(first, "input.2.id").String()
 	if len([]rune(shortCallItemID)) > 64 || shortCallItemID == longCallItemID {
-		t.Fatalf("input.0.id was not shortened to at most 64 characters: %q", shortCallItemID)
+		t.Fatalf("input.1.id was not shortened to at most 64 characters: %q", shortCallItemID)
 	}
 	if len([]rune(shortOutputItemID)) > 64 || shortOutputItemID == longOutputItemID {
-		t.Fatalf("input.1.id was not shortened to at most 64 characters: %q", shortOutputItemID)
+		t.Fatalf("input.2.id was not shortened to at most 64 characters: %q", shortOutputItemID)
 	}
 	if shortCallItemID == shortOutputItemID {
 		t.Fatalf("distinct long IDs produced the same shortened ID: %q", shortCallItemID)
 	}
-	if got := gjson.GetBytes(second, "input.0.id").String(); got != shortCallItemID {
+	if got := gjson.GetBytes(second, "input.1.id").String(); got != shortCallItemID {
 		t.Fatalf("input item ID shortening is not deterministic: first=%q second=%q", shortCallItemID, got)
 	}
-	if got := gjson.GetBytes(first, "input.0.call_id").String(); got != "call-1" {
+	if got := gjson.GetBytes(first, "input.1.call_id").String(); got != "call-1" {
 		t.Fatalf("function call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(first, "input.1.call_id").String(); got != "call-1" {
+	if got := gjson.GetBytes(first, "input.2.call_id").String(); got != "call-1" {
 		t.Fatalf("function call output call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(first, "input.2.id").String(); got != "msg_item_74ec40c883248ebb4885ec84" {
+	if got := gjson.GetBytes(first, "input.3.id").String(); got != "msg_item_74ec40c883248ebb4885ec84" {
 		t.Fatalf("message input item ID was not normalized: %q", got)
 	}
 }

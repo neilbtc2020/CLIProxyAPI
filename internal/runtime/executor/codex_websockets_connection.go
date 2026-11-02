@@ -173,7 +173,7 @@ func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) 
 		return body
 	}
 	body = helps.SetBoolIfDifferent(body, "parallel_tool_calls", false)
-	return body
+	return helps.EnsureCodexLiteReasoningContext(body, headers)
 }
 
 func buildCodexWebsocketRequestBody(body []byte) []byte {

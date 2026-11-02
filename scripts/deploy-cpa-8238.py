@@ -109,7 +109,7 @@ def wait_ready(base):
 
 def verify_service(base, admin, api_key, sha, plugin_version):
     wait_ready(base)
-    status, headers, _ = request(base, '/v0/management/config', admin)
+    status, headers, runtime_config = request(base, '/v0/management/config', admin)
     commit = {key.lower(): value for key, value in headers.items()}.get('x-cpa-commit')
     if status != 200 or commit != sha:
         raise RuntimeError('management endpoint does not report the published SHA')
@@ -135,7 +135,9 @@ def verify_service(base, admin, api_key, sha, plugin_version):
     return {'health': 'ok', 'commit': commit, 'plugin_version': plugin_version,
             'codex_version': values['version'], 'models': len(models['data']),
             'model_ids': [item['id'] for item in models['data'] if isinstance(item.get('id'), str)],
-            'unauthenticated_status': unauth}
+            'unauthenticated_status': unauth,
+            'bootstrap_buffering': runtime_config.get('codex', {}).get('stream-bootstrap-buffering'),
+            'bootstrap_timeout': runtime_config.get('codex', {}).get('stream-bootstrap-timeout')}
 
 
 def select_smoke_model(available, requested):
@@ -150,8 +152,12 @@ def select_smoke_model(available, requested):
     raise RuntimeError('no supported text model is available for inference verification')
 
 
-def prepare_plugin_config(config, version):
+def prepare_plugin_config(config, version, enable_bootstrap_buffering=False):
     config.setdefault('upstream', {}).setdefault('codex', {})['disable-codex-cloaking'] = False
+    if enable_bootstrap_buffering:
+        codex = config['upstream']['codex']
+        codex['stream-bootstrap-buffering'] = True
+        codex['stream-bootstrap-timeout'] = '5s'
     manager = config.setdefault('plugins', {}).setdefault('configs', {}).setdefault(PLUGIN, {})
     manager['enabled'] = True
     manager.setdefault('store', {})['version'] = version
@@ -183,6 +189,8 @@ def main():
     parser.add_argument('--plugin-source', required=True, type=Path)
     parser.add_argument('--plugin-sha', required=True)
     parser.add_argument('--smoke-model', help='Optional exact model ID; otherwise select an advertised text model')
+    parser.add_argument('--enable-bootstrap-buffering', action='store_true',
+                        help='Buffer non-output events for safe overload failover; release on the next event after 5s')
     parser.add_argument('--allow-unverified-upstream', action='store_true',
                         help='Explicit operator waiver: keep a healthy deployment when existing upstream credentials cannot pass inference')
     args = parser.parse_args()
@@ -241,7 +249,8 @@ def main():
             cwd=repo, log=release / 'core-builder.log')
     command(['docker', 'run', '--rm', '--cpus', '4', '-e', 'GOMAXPROCS=4', builder,
              'go', 'test', '-race', './internal/runtime/executor/helps', './internal/runtime/executor',
-             '-run', 'TestCodex(AccountFingerprint|Fingerprint|PerCredential|ExecutorDirectOpenAIImage)',
+             './internal/thinking', './internal/translator/codex/openai/chat-completions', './sdk/cliproxy/auth',
+             '-run', 'Test.*(Codex|ToolResultsSurviveInterleaved|BootstrapOverload)',
              '-count=1'], log=release / 'core-fingerprint-tests.log')
     command(['docker', 'build', '-t', image, *build_args, '.'], cwd=repo, log=release / 'core-image.log')
     plugin_tree = release / 'plugin-source'
@@ -265,7 +274,7 @@ def main():
     for name in ['auths', 'logs']:
         (canary / name).mkdir()
     canary_config = copy.deepcopy(config)
-    manager = prepare_plugin_config(canary_config, plugin_version)
+    manager = prepare_plugin_config(canary_config, plugin_version, args.enable_bootstrap_buffering)
     manager.setdefault('automation', {})['enabled'] = False
     manager.setdefault('inspection_policy', {})['enabled'] = False
     manager.setdefault('default_policy', {})['enabled'] = False
@@ -299,7 +308,7 @@ def main():
         print('Candidate passed; promoting only the 8238 service', flush=True)
         promoted = True
         install_plugin(TARGET, plugin_tree / 'release.so', plugin_version)
-        prepare_plugin_config(config, plugin_version)
+        prepare_plugin_config(config, plugin_version, args.enable_bootstrap_buffering)
         (TARGET / 'config.yaml').write_text(yaml.safe_dump(config, sort_keys=False))
         compose['services'][CONTAINER]['image'] = image
         (TARGET / 'compose.yaml').write_text(yaml.safe_dump(compose, sort_keys=False))
@@ -307,6 +316,8 @@ def main():
                 cwd=TARGET, log=release / 'promotion.log')
         base = f'http://127.0.0.1:{PORT}'
         report['production'] = verify_service(base, admin, keys[0], args.sha, plugin_version)
+        if args.enable_bootstrap_buffering and (not report['production']['bootstrap_buffering'] or report['production']['bootstrap_timeout'] != '5s'):
+            raise RuntimeError('bootstrap failover configuration was not applied')
         live = inspect(CONTAINER)
         built = json.loads(command(['docker', 'image', 'inspect', image]))[0]
         if live['Image'] != built['Id'] or built['Config']['Labels']['org.opencontainers.image.revision'] != args.sha:

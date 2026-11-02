@@ -19,6 +19,7 @@ const (
 	codexCustomToolCallItemIDPrefix       = "ctc"
 	codexCustomToolCallOutputItemIDPrefix = "ctco"
 	codexToolSearchCallItemIDPrefix       = "tsc"
+	codexWebSearchCallItemIDPrefix        = "ws"
 
 	codexInputItemIDOccupied  uint8 = 1 << 0
 	codexInputItemIDPreserved uint8 = 1 << 1
@@ -26,19 +27,20 @@ const (
 	codexInputItemIDDuplicate uint8 = 1 << 3
 )
 
-// SanitizeCodexInputItemIDs normalizes supported input item IDs for Codex, removes encrypted
-// reasoning items whose IDs exceed the Codex limit, and deterministically shortens
-// other overlong input item IDs.
+// SanitizeCodexInputItemIDs preserves stateless encrypted reasoning without its
+// external ID, normalizes supported item IDs and shortens other overlong IDs.
+// Stored requests retain their existing encrypted-reasoning ID handling.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
 	input := util.GetGJSONBytesNoCopy(body, "input")
 	if !input.IsArray() {
 		return body
 	}
 
+	stripEncryptedReasoningIDs := !gjson.GetBytes(body, "store").Bool()
 	items := input.Array()
 	idStates := make(map[string]uint8, len(items))
 	for _, item := range items {
-		if shouldDropCodexEncryptedReasoningItem(item) {
+		if stripEncryptedReasoningIDs && isCodexEncryptedReasoningItem(item) || shouldDropCodexEncryptedReasoningItem(item) {
 			continue
 		}
 		itemID := item.Get("id")
@@ -66,6 +68,19 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 	rebuilt := make([]string, 0, len(items))
 	changed := false
 	for _, item := range items {
+		if stripEncryptedReasoningIDs && isCodexEncryptedReasoningItem(item) {
+			// The ciphertext carries its item identity. Rewriting or replaying an
+			// unrelated outer ID breaks verification; keep the entire reasoning.
+			raw := item.Raw
+			if item.Get("id").Exists() {
+				if next, errDelete := sjson.Delete(raw, "id"); errDelete == nil {
+					raw = next
+					changed = true
+				}
+			}
+			rebuilt = append(rebuilt, raw)
+			continue
+		}
 		if shouldDropCodexEncryptedReasoningItem(item) {
 			changed = true
 			continue
@@ -156,6 +171,8 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 		prefix = codexCustomToolCallItemIDPrefix
 	case "custom_tool_call_output":
 		prefix = codexCustomToolCallOutputItemIDPrefix
+	case "web_search_call":
+		prefix = codexWebSearchCallItemIDPrefix
 	case "tool_search_call":
 		if after, ok := strings.CutPrefix(id, "ts_"); ok && after != "" {
 			return codexToolSearchCallItemIDPrefix + "_" + after
@@ -168,6 +185,14 @@ func normalizeCodexInputItemID(item gjson.Result, id string) string {
 		return id
 	}
 	return prefix + "_" + id
+}
+
+func isCodexEncryptedReasoningItem(item gjson.Result) bool {
+	if item.Get("type").String() != "reasoning" {
+		return false
+	}
+	encryptedContent := item.Get("encrypted_content")
+	return encryptedContent.Type == gjson.String && encryptedContent.String() != ""
 }
 
 func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {

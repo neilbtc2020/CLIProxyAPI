@@ -208,9 +208,12 @@ func convertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				inputItems = append(inputItems, toolOutput)
 
 			default:
-				// A new conversational message starts a new tool-call batch.
-				pendingToolCalls = nil
-				ambiguousToolCallIDs = map[string]struct{}{}
+				// Commentary and developer notices can appear before a tool result.
+				// Keep its pending batch so those outputs are not silently discarded.
+				if role == "user" || (role == "assistant" && m.Get("tool_calls.#").Int() > 0) {
+					pendingToolCalls = nil
+					ambiguousToolCallIDs = map[string]struct{}{}
+				}
 
 				// Handle regular messages
 				msg := []byte(`{}`)
