@@ -140,7 +140,11 @@ def verify_service(base, admin, api_key, sha, plugin_version):
             'bootstrap_timeout': runtime_config.get('codex', {}).get('stream-bootstrap-timeout')}
 
 
-def select_smoke_model(available, requested):
+def select_smoke_model(available, requested, allow_unavailable=False):
+    # An explicitly waived upstream check must still make a real request when
+    # every credential is disabled and the dynamic model registry is empty.
+    if allow_unavailable and not available:
+        return requested or 'gpt-6.1-sol'
     if requested:
         if requested not in available:
             raise RuntimeError('requested smoke model is not advertised by this instance')
@@ -365,7 +369,7 @@ def main():
             raise RuntimeError('new container restarted or was killed')
         report['image_id'] = live['Image']
         print('Checking authenticated Responses inference and recent service logs', flush=True)
-        smoke_model = select_smoke_model(report['production']['model_ids'], args.smoke_model)
+        smoke_model = select_smoke_model(report['production']['model_ids'], args.smoke_model, args.allow_unverified_upstream)
         try:
             status, _, body = request(base, '/v1/responses', keys[0],
                                       {'model': smoke_model, 'input': 'Reply exactly OK.', 'reasoning': {'effort': 'low'}, 'stream': False}, timeout=90)
