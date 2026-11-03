@@ -288,9 +288,18 @@ def verify_automatic_privacy(base, admin, canary):
             ids = {a['id'] for a in accounts}
             confirmed = {op.get('target_id') for op in operations.get('operations', [])
                          if op.get('action') == 'privacy_set' and op.get('status') == 'succeeded' and op.get('source') == 'default_policy'}
-            if status == 200 and ids <= confirmed:
+            existing = next((a for a in listing.get('accounts', []) if a.get('name') == 'release-existing-privacy.json'), None)
+            if existing is None or (existing.get('privacy') or {}).get('mode') != 'unknown' or not existing.get('disabled'):
+                raise RuntimeError('automatic privacy modified the existing-account startup baseline')
+            if any(op.get('action') == 'privacy_set' and op.get('target_id') == existing['id'] for op in operations.get('operations', [])):
+                raise RuntimeError('automatic privacy scheduled an existing account')
+            # Only the two deliberately invalid post-start upload fixtures may
+            # still be queued; the startup baseline must not become pending.
+            pending = json.loads(state_path.read_text()).get('pending', {})
+            if status == 200 and ids <= confirmed and len(pending) <= 2:
                 return {'default_enabled': True, 'raw_upload': 'training_off', 'multipart_upload': 'training_off',
-                        'automatic_operation_records': 2, 'fixtures_disabled': True, 'production_accounts_added': 0}
+                        'automatic_operation_records': 2, 'fixtures_disabled': True, 'existing_account_untouched': True,
+                        'production_accounts_added': 0}
         time.sleep(2)
     raise RuntimeError('automatic privacy did not confirm training_off for both isolated uploads')
 
@@ -460,6 +469,9 @@ def main():
         shutil.copytree(TARGET / name, canary / name)
     for name in ['auths', 'logs']:
         (canary / name).mkdir()
+    if args.verify_auto_privacy:
+        write_json(canary / 'auths/release-existing-privacy.json',
+                   {'type': 'codex', 'access_token': 'isolated-existing-privacy-fixture', 'disabled': True})
     canary_config = copy.deepcopy(config)
     manager = prepare_plugin_config(canary_config, plugin_version, args.enable_bootstrap_buffering)
     manager.setdefault('automation', {})['enabled'] = False
