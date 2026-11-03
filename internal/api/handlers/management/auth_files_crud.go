@@ -322,6 +322,7 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			if errWrite = decoder.Decode(&auth.Metadata); errWrite == nil {
 				coreauth.NormalizeCredentialMetadata(auth.Metadata)
 				auth.ProxyURL, _ = auth.Metadata["proxy_url"].(string)
+				auth.BindFileSnapshot(dst, prepared)
 			}
 		}
 	} else {

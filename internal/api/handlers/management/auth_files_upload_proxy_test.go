@@ -134,6 +134,11 @@ func TestNativeUploadProxyFileStorePreservesExactMetadata(t *testing.T) {
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: dir}, manager)
 	raw := []byte(`{"type":"codex","access_token":"fixture","proxy_url":"socks5h://127.0.0.1:41001","disabled":true,"priority":37,"custom":{"integer":9007199254740993}}`)
 	for i := 0; i < 2; i++ {
+		if i == 1 {
+			// Reupload omits the server-assigned proxy and replaces credentials.
+			// The runtime must see both changes immediately, without a watcher.
+			raw = []byte(`{"type":"codex","access_token":"replacement","disabled":true,"priority":37,"custom":{"integer":9007199254740993}}`)
+		}
 		if err := h.writeAuthFile(context.Background(), "account.json", raw); err != nil {
 			t.Fatal(err)
 		}
@@ -149,6 +154,9 @@ func TestNativeUploadProxyFileStorePreservesExactMetadata(t *testing.T) {
 		auth, ok := manager.GetByID("account.json")
 		if !ok || !auth.Disabled || auth.ProxyURL != "socks5h://127.0.0.1:41001" || auth.Attributes["priority"] != "37" {
 			t.Fatal("runtime account lost uploaded settings")
+		}
+		if i == 1 && auth.Metadata["access_token"] != "replacement" {
+			t.Fatal("reupload left the previous credential in the runtime")
 		}
 	}
 }
