@@ -930,6 +930,9 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {
 		body = helps.ApplyCodexFingerprintMetadata(body, codexFingerprintSourceHeaders(ctx, opts.Headers), helps.CodexIdentityForAuth(auth))
 	}
+	if auth != nil && !codexAuthUsesAPIKey(auth) && !useSIWC {
+		body = helps.NormalizeCodexToolChoice(body)
+	}
 	body = finalizePayload(body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	if codexAccountFingerprintEnabled(ctx, e.cfg, auth, opts.Headers) {

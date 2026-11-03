@@ -483,6 +483,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					payload = steerReq.Payload
 					if codexUseSIWCForRequest(ctx, auth, steerHeaders) {
 						payload = thinking.StripConfigurationUpdates(payload)
+					} else if auth != nil && !codexAuthUsesAPIKey(auth) {
+						payload = helps.NormalizeCodexToolChoice(payload)
 					}
 					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, steerOpts)(payload)
 					payload, _ = sjson.SetBytes(payload, "type", "response.steer")

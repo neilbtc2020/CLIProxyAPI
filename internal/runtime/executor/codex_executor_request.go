@@ -164,6 +164,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if codexAccountFingerprintEnabled(ctx, e.cfg, auth, headers) {
 		rawJSON = helps.ApplyCodexFingerprintMetadata(rawJSON, codexFingerprintSourceHeaders(ctx, headers), helps.CodexIdentityForAuth(auth))
 	}
+	if auth != nil && !codexAuthUsesAPIKey(auth) && !codexUseSIWCForRequest(ctx, auth, headers) {
+		rawJSON = helps.NormalizeCodexToolChoice(rawJSON)
+	}
 	rawJSON = helps.FinalizePayload(ctx, rawJSON)
 	wireBody := rawJSON
 	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && auth != nil &&

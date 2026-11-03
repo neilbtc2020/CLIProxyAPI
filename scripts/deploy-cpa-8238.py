@@ -73,8 +73,8 @@ def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def request(base, path, token=None, body=None, timeout=15):
-    headers = {}
+def request(base, path, token=None, body=None, timeout=15, extra_headers=None):
+    headers = dict(extra_headers or {})
     if token:
         headers['Authorization'] = 'Bearer ' + token
     data = None
@@ -195,6 +195,87 @@ def verify_minimal_effort(base, api_key, model):
     return results
 
 
+def verify_tool_choice(base, api_key, model):
+    results = []
+    for lite in [False, True]:
+        payload = {'model': model, 'input': 'Reply exactly OK without calling tools.',
+                   'reasoning': {'effort': 'low'}, 'tool_choice': {'type': 'auto'}, 'stream': False,
+                   'tools': [{'type': 'function', 'name': 'lookup', 'description': 'Look up a value.',
+                              'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False}}]}
+        headers = {'X-OpenAI-Internal-Codex-Responses-Lite': 'true'} if lite else {}
+        status, _, body = request(base, '/v1/responses', api_key, payload, timeout=90, extra_headers=headers)
+        output = ' '.join(part.get('text', '') for item in body.get('output', [])
+                          if isinstance(item, dict) for part in item.get('content', []) if isinstance(part, dict))
+        results.append({'lite': lite, 'model': model, 'status': status, 'response_status': body.get('status'),
+                        'tool_choice': body.get('tool_choice'), 'output_contains_ok': 'OK' in output,
+                        'passed': status == 200 and body.get('status') == 'completed' and 'OK' in output})
+    return results
+
+
+def verify_automatic_privacy(base, admin, canary):
+    route = '/v0/management/plugins/' + PLUGIN
+    status, _, policy = request(base, route + '/defaults', admin)
+    if status != 200 or policy.get('policy', {}).get('new_account_privacy_enabled') is not True:
+        raise RuntimeError('new-account automatic privacy is not enabled by default')
+    state_path = canary / 'plugins/data' / PLUGIN / 'new-account-privacy.json'
+    for _ in range(45):
+        request(base, route + '/accounts?page_size=100', admin)
+        if state_path.exists() and json.loads(state_path.read_text()).get('initialized'):
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError('automatic privacy did not establish its initial account baseline')
+
+    # Use one existing credential only in the isolated candidate, always disabled
+    # for inference. Prefer a credential already confirmed as training_off.
+    status, _, listing = request(f'http://127.0.0.1:{PORT}', route + '/accounts?page_size=100', admin)
+    candidates = [account for account in listing.get('accounts', [])
+                  if account.get('provider') in ('codex', 'openai') and not account.get('disabled')]
+    candidates.sort(key=lambda account: (account.get('privacy') or {}).get('mode') != 'training_off')
+    fixture = None
+    for account in candidates:
+        name = account.get('name', '')
+        if Path(name).name != name or not name.endswith('.json'):
+            continue
+        path = TARGET / 'auths' / name
+        if not path.is_file():
+            continue
+        value = json.loads(path.read_text())
+        if value.get('type') == 'codex' and value.get('access_token'):
+            fixture = value
+            break
+    if status != 200 or fixture is None:
+        raise RuntimeError('no existing OAuth credential is available for isolated privacy acceptance')
+    fixture['disabled'] = True
+    names = ['release-privacy-raw.json', 'release-privacy-form.json']
+    status, _, _ = request(base, '/v8/management/credentials?name=' + names[0], admin, fixture)
+    if status != 200:
+        raise RuntimeError('isolated privacy raw upload failed')
+    boundary = 'cpa-privacy-acceptance-boundary'
+    data = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{names[1]}"\r\n'
+            'Content-Type: application/json\r\n\r\n').encode() + json.dumps(fixture).encode() + f'\r\n--{boundary}--\r\n'.encode()
+    upload = urllib.request.Request(base + '/v8/management/credentials', data=data,
+                                    headers={'Authorization': 'Bearer ' + admin, 'Content-Type': 'multipart/form-data; boundary=' + boundary})
+    with urllib.request.urlopen(upload, timeout=30) as response:
+        if response.status != 200:
+            raise RuntimeError('isolated privacy multipart upload failed')
+    for _ in range(90):
+        status, _, listing = request(base, route + '/accounts?page_size=100', admin)
+        accounts = [account for account in listing.get('accounts', []) if account.get('name') in names]
+        if status == 200 and len(accounts) == 2 and all((a.get('privacy') or {}).get('mode') == 'training_off' for a in accounts):
+            if not all(a.get('disabled') for a in accounts):
+                raise RuntimeError('isolated privacy acceptance unexpectedly enabled an account')
+            status, _, operations = request(base, route + '/operations?source=default_policy&page_size=100', admin)
+            ids = {a['id'] for a in accounts}
+            confirmed = {op.get('target_id') for op in operations.get('operations', [])
+                         if op.get('action') == 'privacy_set' and op.get('status') == 'succeeded' and op.get('source') == 'default_policy'}
+            if status == 200 and ids <= confirmed:
+                return {'default_enabled': True, 'raw_upload': 'training_off', 'multipart_upload': 'training_off',
+                        'automatic_operation_records': 2, 'fixtures_disabled': True, 'production_accounts_added': 0}
+        time.sleep(2)
+    raise RuntimeError('automatic privacy did not confirm training_off for both isolated uploads')
+
+
 def verify_native_upload_proxies(base, admin, auth_dir):
     status, _, pool = request(base, '/v0/management/plugins/' + PLUGIN + '/proxy-pool', admin)
     if status != 200 or not pool.get('auto_assign') or not pool.get('available'):
@@ -276,6 +357,10 @@ def main():
                         help='Explicit operator waiver: keep a healthy deployment when existing upstream credentials cannot pass inference')
     parser.add_argument('--verify-minimal-effort', action='store_true',
                         help='Require live minimal-effort inference across body, suffix, update and chat paths; failures roll back')
+    parser.add_argument('--verify-tool-choice', action='store_true',
+                        help='Require live object-form auto tool choice in standard and Lite requests')
+    parser.add_argument('--verify-auto-privacy', action='store_true',
+                        help='Require automatic training_off after isolated raw/multipart uploads before promotion')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('run this release script as root')
@@ -347,7 +432,7 @@ def main():
     print('Building the matching account plugin from its committed main revision', flush=True)
     command(['docker', 'run', '--rm', '--cpus', '4', '-e', 'GOMAXPROCS=4', '-v', str(plugin_tree) + ':/plugin',
              '-w', '/plugin', builder, 'sh', '-ec',
-             'go test -race ./internal/manager -run "TestCodex(AccountFingerprintMatchesCore|AccountManagementFingerprintMatchesInference|FingerprintMetadataStaysASCII)" -count=1 && '
+             'go test -race ./internal/manager -run "Test(Codex(AccountFingerprintMatchesCore|AccountManagementFingerprintMatchesInference|FingerprintMetadataStaysASCII)|NewAccountPrivacy|AccountPrivacy)" -count=1 && '
              'CGO_ENABLED=1 go build -buildvcs=false -buildmode=c-shared -ldflags "-X cpa-account-config-manager/internal/manager.PluginVersion=' + plugin_version + '" -o /plugin/release.so .'],
             log=release / 'plugin-build.log')
     canary = release / 'canary'
@@ -385,6 +470,9 @@ def main():
         candidate_port = inspect(candidate)['NetworkSettings']['Ports']['8317/tcp'][0]['HostPort']
         report['candidate'] = verify_service('http://127.0.0.1:' + candidate_port, admin, keys[0], args.sha, plugin_version)
         report['candidate_upload'] = verify_native_upload_proxies('http://127.0.0.1:' + candidate_port, admin, canary / 'auths')
+        if args.verify_auto_privacy:
+            print('Verifying automatic privacy after isolated raw and multipart uploads', flush=True)
+            report['candidate_privacy'] = verify_automatic_privacy('http://127.0.0.1:' + candidate_port, admin, canary)
         command(['docker', 'logs', candidate], log=release / 'candidate-container.log')
         command(['docker', 'rm', '-f', candidate])
         if file_hash(TARGET / 'config.yaml') != config_hash or file_hash(TARGET / 'compose.yaml') != compose_hash:
@@ -445,6 +533,18 @@ def main():
                                     'fatal_or_panic': bool(re.search(r'level=fatal|panic:', logs))}
             if report['log_review']['fatal_or_panic']:
                 raise RuntimeError('fatal error during minimal-effort acceptance')
+        if args.verify_tool_choice:
+            print('Verifying object-form auto tool choice in standard and Lite inference', flush=True)
+            tool_model = 'gpt-5.6-sol' if 'gpt-5.6-sol' in report['production']['model_ids'] else smoke_model
+            report['tool_choice'] = verify_tool_choice(base, keys[0], tool_model)
+            write_json(release / 'verification.json', report)
+            if not all(case['passed'] for case in report['tool_choice']):
+                raise RuntimeError('live tool-choice acceptance failed')
+        if args.verify_auto_privacy:
+            status, _, policy = request(base, '/v0/management/plugins/' + PLUGIN + '/defaults', admin)
+            report['production_privacy_default_enabled'] = status == 200 and policy.get('policy', {}).get('new_account_privacy_enabled') is True
+            if not report['production_privacy_default_enabled']:
+                raise RuntimeError('production automatic privacy policy is not enabled')
         if inspect('cli-proxy-api-8237')['Id'] != other_before:
             raise RuntimeError('8237 changed concurrently; investigate before declaring completion')
         report['unrelated_8237_unchanged'] = True
