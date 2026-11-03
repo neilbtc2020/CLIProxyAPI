@@ -290,7 +290,27 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	}
 	release := h.beginSIWCFileMutation(ctx, dst)
 	defer release()
-	if errWrite := h.writeAuthFileBytes(dst, data, auth); errWrite != nil {
+	h.authUploadMu.Lock()
+	defer h.authUploadMu.Unlock()
+	var errWrite error
+	if coreauth.IsCodexAuthRecord(auth) {
+		errWrite = codex.WithFileLock(dst, func() error {
+			prepared, errPrepare := prepareUploadedAuthProxy(dst, data, func() (uploadProxyPool, error) {
+				return h.loadUploadProxyPool(ctx)
+			})
+			if errPrepare != nil {
+				return errPrepare
+			}
+			auth, err = h.buildAuthFromFileData(dst, prepared)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(dst, prepared, 0o600)
+		})
+	} else {
+		errWrite = h.writeAuthFileBytes(dst, data, auth)
+	}
+	if errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {

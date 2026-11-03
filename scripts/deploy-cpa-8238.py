@@ -152,6 +152,44 @@ def select_smoke_model(available, requested):
     raise RuntimeError('no supported text model is available for inference verification')
 
 
+def verify_native_upload_proxies(base, admin, auth_dir):
+    status, _, pool = request(base, '/v0/management/plugins/' + PLUGIN + '/proxy-pool', admin)
+    if status != 200 or not pool.get('auto_assign') or not pool.get('available'):
+        raise RuntimeError('upload verification requires an enabled, nonempty proxy pool')
+    endpoints = {entry['display_url'] for entry in pool['entries'] if entry['state'] == 'available' and not entry.get('credential_env')}
+    fixture = {'type': 'codex', 'access_token': 'isolated-upload-fixture', 'disabled': True,
+               'priority': 37, 'custom': {'integer': 9007199254740993}}
+    raw_name, form_name = 'release-upload-raw.json', 'release-upload-form.json'
+    status, _, _ = request(base, '/v0/management/auth-files?name=' + raw_name, admin, fixture)
+    if status != 200:
+        raise RuntimeError('raw native upload failed')
+    boundary = 'cpa-release-upload-boundary'
+    data = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{form_name}"\r\n'
+            'Content-Type: application/json\r\n\r\n').encode() + json.dumps(fixture).encode() + f'\r\n--{boundary}--\r\n'.encode()
+    req = urllib.request.Request(base + '/v0/management/auth-files', data=data,
+                                 headers={'Authorization': 'Bearer ' + admin, 'Content-Type': 'multipart/form-data; boundary=' + boundary})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        if response.status != 200:
+            raise RuntimeError('multipart native upload failed')
+    persisted = {}
+    for name in [raw_name, form_name]:
+        value = json.loads((auth_dir / name).read_text())
+        if value.get('proxy_url') not in endpoints or any(value.get(k) != v for k, v in fixture.items()):
+            raise RuntimeError('native upload proxy or metadata preservation failed')
+        persisted[name] = value['proxy_url']
+    fixture['access_token'] = 'isolated-upload-retry'
+    status, _, _ = request(base, '/v8/management/credentials?name=' + raw_name, admin, fixture)
+    retried = json.loads((auth_dir / raw_name).read_text())
+    if status != 200 or retried.get('proxy_url') != persisted[raw_name] or any(retried.get(k) != v for k, v in fixture.items()):
+        raise RuntimeError('v8 repeated upload rotated the proxy or changed metadata')
+    status, _, listing = request(base, '/v0/management/plugins/' + PLUGIN + '/accounts?page_size=100', admin)
+    checked = [account for account in listing.get('accounts', []) if account.get('name') in persisted]
+    if status != 200 or len(checked) != 2 or any(not a.get('disabled') or not a.get('proxy_configured') for a in checked):
+        raise RuntimeError('uploaded runtime account did not retain proxy/disabled state')
+    return {'raw_upload': 'passed', 'multipart_upload': 'passed', 'v8_retry_stable': True,
+            'metadata_preserved': True, 'runtime_proxy_configured': True, 'fixtures_disabled': True}
+
+
 def prepare_plugin_config(config, version, enable_bootstrap_buffering=False):
     config.setdefault('upstream', {}).setdefault('codex', {})['disable-codex-cloaking'] = False
     if enable_bootstrap_buffering:
@@ -249,8 +287,8 @@ def main():
             cwd=repo, log=release / 'core-builder.log')
     command(['docker', 'run', '--rm', '--cpus', '4', '-e', 'GOMAXPROCS=4', builder,
              'go', 'test', '-race', './internal/runtime/executor/helps', './internal/runtime/executor',
-             './internal/thinking', './internal/translator/codex/openai/chat-completions', './sdk/cliproxy/auth', './internal/pluginhost',
-             '-run', 'Test.*(Codex|ToolResultsSurviveInterleaved|BootstrapOverload|ProxyUpdate|HostProxy|ReviewProxy|ApplyAuthPriorityMetadata)',
+             './internal/thinking', './internal/translator/codex/openai/chat-completions', './sdk/cliproxy/auth', './internal/pluginhost', './internal/api/handlers/management',
+             '-run', 'Test.*(Codex|ToolResultsSurviveInterleaved|BootstrapOverload|ProxyUpdate|HostProxy|ReviewProxy|ApplyAuthPriorityMetadata|NativeUploadProxy|UploadAuthFile|SIWC)',
              '-count=1'], log=release / 'core-fingerprint-tests.log')
     command(['docker', 'build', '-t', image, *build_args, '.'], cwd=repo, log=release / 'core-image.log')
     plugin_tree = release / 'plugin-source'
@@ -301,6 +339,7 @@ def main():
         command([*run_args, image])
         candidate_port = inspect(candidate)['NetworkSettings']['Ports']['8317/tcp'][0]['HostPort']
         report['candidate'] = verify_service('http://127.0.0.1:' + candidate_port, admin, keys[0], args.sha, plugin_version)
+        report['candidate_upload'] = verify_native_upload_proxies('http://127.0.0.1:' + candidate_port, admin, canary / 'auths')
         command(['docker', 'logs', candidate], log=release / 'candidate-container.log')
         command(['docker', 'rm', '-f', candidate])
         if file_hash(TARGET / 'config.yaml') != config_hash or file_hash(TARGET / 'compose.yaml') != compose_hash:
