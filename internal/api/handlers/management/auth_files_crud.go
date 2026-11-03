@@ -305,6 +305,14 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 			if err != nil {
 				return err
 			}
+			// The manager also persists this record. Retain JSON numbers in that
+			// second write so custom account metadata cannot lose precision.
+			decoder := json.NewDecoder(bytes.NewReader(prepared))
+			decoder.UseNumber()
+			if err = decoder.Decode(&auth.Metadata); err != nil {
+				return err
+			}
+			coreauth.NormalizeCredentialMetadata(auth.Metadata)
 			return os.WriteFile(dst, prepared, 0o600)
 		})
 	} else {

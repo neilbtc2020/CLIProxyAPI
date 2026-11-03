@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func testUploadPool(t *testing.T, body string) uploadProxyPool {
@@ -118,5 +122,32 @@ func TestNativeUploadProxyPluginReadErrors(t *testing.T) {
 	_, err := readUploadProxyPool(context.Background(), func(http.ResponseWriter, *http.Request) bool { return false })
 	if err == nil {
 		t.Fatal("missing plugin route was accepted")
+	}
+}
+
+func TestNativeUploadProxyFileStorePreservesExactMetadata(t *testing.T) {
+	dir := t.TempDir()
+	store := sdkAuth.NewFileTokenStore()
+	store.SetBaseDir(dir)
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: dir}, manager)
+	raw := []byte(`{"type":"codex","access_token":"fixture","proxy_url":"socks5h://127.0.0.1:41001","disabled":true,"priority":37,"custom":{"integer":9007199254740993}}`)
+	for i := 0; i < 2; i++ {
+		if err := h.writeAuthFile(context.Background(), "account.json", raw); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "account.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var metadata map[string]json.RawMessage
+		_ = json.Unmarshal(data, &metadata)
+		if string(metadata["custom"]) != `{"integer":9007199254740993}` || string(metadata["disabled"]) != "true" || string(metadata["proxy_url"]) != `"socks5h://127.0.0.1:41001"` {
+			t.Fatalf("persisted upload metadata changed on iteration %d: %s", i, data)
+		}
+		auth, ok := manager.GetByID("account.json")
+		if !ok || !auth.Disabled || auth.ProxyURL != "socks5h://127.0.0.1:41001" || auth.Attributes["priority"] != "37" {
+			t.Fatal("runtime account lost uploaded settings")
+		}
 	}
 }

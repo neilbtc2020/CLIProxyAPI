@@ -64,7 +64,7 @@ func TestUploadAuthFile_PreservesPriorityAttributes(t *testing.T) {
 	if got := auth.Attributes["priority"]; got != "98" {
 		t.Fatalf("priority attribute = %q, want %q", got, "98")
 	}
-	if got := auth.Metadata["priority"]; got != float64(98) {
+	if got := auth.Metadata["priority"]; got != json.Number("98") {
 		t.Fatalf("priority metadata = %#v, want 98", got)
 	}
 }
