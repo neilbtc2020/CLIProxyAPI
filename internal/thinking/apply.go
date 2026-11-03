@@ -295,11 +295,11 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 		return body, nil
 	}
 	nativeSourceBody := body
-	// Keep valid native baselines and independent updates. Unsupported disabled
+	// Keep valid native baselines and independent updates. Unsupported none/minimal
 	// effort still needs the canonical minimum, including updates with a suffix.
 	if nativeResponses && providerFormat == "codex" && !isPluginApplier {
 		var err error
-		body, err = normalizeNativeCodexNoneEffort(body, modelInfo, applier)
+		body, err = normalizeNativeCodexMinimumEffort(body, modelInfo, applier)
 		if err != nil {
 			return body, err
 		}

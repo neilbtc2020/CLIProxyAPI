@@ -1,7 +1,6 @@
 package thinking
 
 import (
-	"bytes"
 	"strconv"
 	"strings"
 
@@ -10,12 +9,11 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// normalizeNativeCodexNoneEffort keeps native baselines and in-turn updates
-// separate while using canonical validation for an unsupported disabled effort.
-func normalizeNativeCodexNoneEffort(body []byte, modelInfo *registry.ModelInfo, applier ProviderApplier) ([]byte, error) {
+// normalizeNativeCodexMinimumEffort keeps native baselines and in-turn updates
+// separate while using canonical validation for unsupported none/minimal effort.
+func normalizeNativeCodexMinimumEffort(body []byte, modelInfo *registry.ModelInfo, applier ProviderApplier) ([]byte, error) {
 	if modelInfo == nil || IsUserDefinedModel(modelInfo) || modelInfo.Thinking == nil ||
-		modelInfo.Thinking.ZeroAllowed || HasLevel(modelInfo.Thinking.Levels, string(LevelNone)) ||
-		!bytes.Contains(body, []byte("none")) || !gjson.ValidBytes(body) {
+		!gjson.ValidBytes(body) {
 		return body, nil
 	}
 	paths := []string{"reasoning.effort"}
@@ -24,25 +22,42 @@ func normalizeNativeCodexNoneEffort(body []byte, modelInfo *registry.ModelInfo, 
 			paths = append(paths, "input."+strconv.Itoa(index)+".reasoning.effort")
 		}
 	}
-	var replacement string
+	replacements := make(map[ThinkingLevel]string)
 	for _, path := range paths {
 		value := gjson.GetBytes(body, path)
-		if value.Type != gjson.String || strings.TrimSpace(value.String()) != string(LevelNone) {
+		if value.Type != gjson.String {
 			continue
 		}
-		if replacement == "" {
-			validated, err := ValidateConfig(ThinkingConfig{Mode: ModeNone}, modelInfo, "codex", "codex", false)
+		level := ThinkingLevel(strings.ToLower(strings.TrimSpace(value.String())))
+		config := ThinkingConfig{Mode: ModeLevel, Level: level}
+		switch level {
+		case LevelNone:
+			if modelInfo.Thinking.ZeroAllowed || HasLevel(modelInfo.Thinking.Levels, string(LevelNone)) {
+				continue
+			}
+			config = ThinkingConfig{Mode: ModeNone}
+		case LevelMinimal:
+			if HasLevel(modelInfo.Thinking.Levels, string(LevelMinimal)) {
+				continue
+			}
+		default:
+			continue
+		}
+		replacement, cached := replacements[level]
+		if !cached {
+			validated, err := ValidateConfig(config, modelInfo, "codex", "codex", false)
 			if err != nil || validated == nil {
 				return body, err
 			}
-			applied, err := applier.Apply([]byte(`{"reasoning":{"effort":"none"}}`), *validated, modelInfo)
+			applied, err := applier.Apply([]byte(`{}`), *validated, modelInfo)
 			if err != nil {
 				return body, err
 			}
 			replacement = gjson.GetBytes(applied, "reasoning.effort").String()
-			if replacement == "" || replacement == string(LevelNone) {
-				return body, nil
-			}
+			replacements[level] = replacement
+		}
+		if replacement == "" || replacement == string(level) {
+			continue
 		}
 		updated, err := sjson.SetBytes(body, path, replacement)
 		if err != nil {

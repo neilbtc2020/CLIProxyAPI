@@ -16,6 +16,7 @@ import (
 //   - Auto-converts between Budget and Level formats based on model capability
 //   - Validates that requested level is in the model's supported levels list
 //   - Clamps budget values to model's allowed range
+//   - Clamps unsupported minimal effort to the lowest supported level
 //   - When converting Budget -> Level for level-only models, clamps the derived standard level to the nearest supported level
 //     (special values none/auto are preserved)
 //   - When config comes from a model suffix, strict budget validation is disabled (we clamp instead of error)
@@ -131,7 +132,9 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 
 	if len(support.Levels) > 0 && config.Mode == ModeLevel {
 		if !isLevelSupported(string(config.Level), support.Levels) {
-			if allowClampUnsupported {
+			// Like none on models that cannot disable thinking, minimal requests
+			// the lowest available effort even within the same provider family.
+			if allowClampUnsupported || strings.EqualFold(string(config.Level), string(LevelMinimal)) {
 				config.Level = clampLevel(config.Level, modelInfo, toFormat)
 			}
 			if !isLevelSupported(string(config.Level), support.Levels) {

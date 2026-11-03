@@ -156,6 +156,45 @@ def select_smoke_model(available, requested, allow_unavailable=False):
     raise RuntimeError('no supported text model is available for inference verification')
 
 
+def verify_minimal_effort(base, api_key, model):
+    prompt = 'Reply exactly OK.'
+    cases = [
+        ('responses_body', '/v1/responses', {
+            'model': model, 'input': prompt, 'reasoning': {'effort': 'minimal'}, 'stream': False}),
+        ('responses_suffix', '/v1/responses', {
+            'model': model + '(minimal)', 'input': prompt, 'reasoning': {'effort': 'high'}, 'stream': False}),
+        ('responses_update', '/v1/responses', {
+            'model': model, 'reasoning': {'effort': 'low'}, 'stream': False,
+            'input': [{'type': 'configuration_update', 'reasoning': {'effort': 'minimal'}},
+                      {'role': 'user', 'content': prompt}]}),
+        ('chat_body', '/v1/chat/completions', {
+            'model': model, 'messages': [{'role': 'user', 'content': prompt}],
+            'reasoning_effort': 'minimal', 'stream': False}),
+    ]
+    results = []
+    for name, path, payload in cases:
+        try:
+            status, _, body = request(base, path, api_key, payload, timeout=90)
+        except (OSError, ValueError) as error:
+            results.append({'case': name, 'passed': False, 'error_type': type(error).__name__})
+            continue
+        if path == '/v1/responses':
+            output = ' '.join(part.get('text', '') for item in body.get('output', [])
+                              if isinstance(item, dict) for part in item.get('content', [])
+                              if isinstance(part, dict))
+            completed = body.get('status') == 'completed'
+        else:
+            output = ' '.join(choice.get('message', {}).get('content') or ''
+                              for choice in body.get('choices', []) if isinstance(choice, dict))
+            completed = bool(body.get('choices'))
+        effort = (body.get('reasoning') or {}).get('effort')
+        results.append({'case': name, 'status': status, 'response_status': body.get('status'),
+                        'response_effort': effort, 'output_contains_ok': 'OK' in output,
+                        'error_code': (body.get('error') or {}).get('code'),
+                        'passed': status == 200 and completed and 'OK' in output and effort in (None, 'low')})
+    return results
+
+
 def verify_native_upload_proxies(base, admin, auth_dir):
     status, _, pool = request(base, '/v0/management/plugins/' + PLUGIN + '/proxy-pool', admin)
     if status != 200 or not pool.get('auto_assign') or not pool.get('available'):
@@ -235,6 +274,8 @@ def main():
                         help='Buffer non-output events for safe overload failover; release on the next event after 5s')
     parser.add_argument('--allow-unverified-upstream', action='store_true',
                         help='Explicit operator waiver: keep a healthy deployment when existing upstream credentials cannot pass inference')
+    parser.add_argument('--verify-minimal-effort', action='store_true',
+                        help='Require live minimal-effort inference across body, suffix, update and chat paths; failures roll back')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('run this release script as root')
@@ -292,7 +333,7 @@ def main():
     command(['docker', 'run', '--rm', '--cpus', '4', '-e', 'GOMAXPROCS=4', builder,
              'go', 'test', '-race', './internal/runtime/executor/helps', './internal/runtime/executor',
              './internal/thinking', './internal/translator/codex/openai/chat-completions', './sdk/cliproxy/auth', './internal/pluginhost', './internal/api/handlers/management',
-             '-run', 'Test.*(Codex|ToolResultsSurviveInterleaved|BootstrapOverload|ProxyUpdate|HostProxy|ReviewProxy|ApplyAuthPriorityMetadata|NativeUploadProxy|UploadAuthFile|SIWC)',
+             '-run', 'Test.*(Codex|MinimalEffort|ToolResultsSurviveInterleaved|BootstrapOverload|ProxyUpdate|HostProxy|ReviewProxy|ApplyAuthPriorityMetadata|NativeUploadProxy|UploadAuthFile|SIWC)',
              '-count=1'], log=release / 'core-fingerprint-tests.log')
     command(['docker', 'build', '-t', image, *build_args, '.'], cwd=repo, log=release / 'core-image.log')
     plugin_tree = release / 'plugin-source'
@@ -392,6 +433,18 @@ def main():
         if not inference_passed and not args.allow_unverified_upstream:
             write_json(release / 'verification.json', report)
             raise RuntimeError(f'live inference smoke failed with HTTP {status}')
+        if args.verify_minimal_effort:
+            print('Verifying minimal effort through live body, suffix, update and chat requests', flush=True)
+            report['minimal_effort'] = verify_minimal_effort(base, keys[0], smoke_model)
+            write_json(release / 'verification.json', report)
+            if not all(case['passed'] for case in report['minimal_effort']):
+                raise RuntimeError('live minimal-effort acceptance failed')
+            command(['docker', 'logs', CONTAINER], log=release / 'production-container.log')
+            logs = (release / 'production-container.log').read_text(errors='replace')
+            report['log_review'] = {'error_lines': sum('level=error' in line for line in logs.splitlines()),
+                                    'fatal_or_panic': bool(re.search(r'level=fatal|panic:', logs))}
+            if report['log_review']['fatal_or_panic']:
+                raise RuntimeError('fatal error during minimal-effort acceptance')
         if inspect('cli-proxy-api-8237')['Id'] != other_before:
             raise RuntimeError('8237 changed concurrently; investigate before declaring completion')
         report['unrelated_8237_unchanged'] = True
