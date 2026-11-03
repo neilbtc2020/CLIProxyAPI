@@ -288,33 +288,42 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
+	var pool uploadProxyPool
+	var poolErr error
+	if coreauth.IsCodexAuthRecord(auth) {
+		// Plugin lifecycle calls may consult the manager. Resolve the pool
+		// before any mutation/file lock; only new assignments need its result.
+		pool, poolErr = h.loadUploadProxyPool(ctx)
+	}
 	release := h.beginSIWCFileMutation(ctx, dst)
 	defer release()
 	h.authUploadMu.Lock()
 	defer h.authUploadMu.Unlock()
 	var errWrite error
 	if coreauth.IsCodexAuthRecord(auth) {
+		var prepared []byte
 		errWrite = codex.WithFileLock(dst, func() error {
-			prepared, errPrepare := prepareUploadedAuthProxy(dst, data, func() (uploadProxyPool, error) {
-				return h.loadUploadProxyPool(ctx)
+			var errPrepare error
+			prepared, errPrepare = prepareUploadedAuthProxy(dst, data, func() (uploadProxyPool, error) {
+				return pool, poolErr
 			})
 			if errPrepare != nil {
 				return errPrepare
 			}
-			auth, err = h.buildAuthFromFileData(dst, prepared)
-			if err != nil {
-				return err
-			}
+			return os.WriteFile(dst, prepared, 0o600)
+		})
+		if errWrite == nil {
+			// Never enter the auth manager while holding the file lock: refresh
+			// persistence acquires these locks in the opposite direction.
 			// The manager also persists this record. Retain JSON numbers in that
 			// second write so custom account metadata cannot lose precision.
 			decoder := json.NewDecoder(bytes.NewReader(prepared))
 			decoder.UseNumber()
-			if err = decoder.Decode(&auth.Metadata); err != nil {
-				return err
+			if errWrite = decoder.Decode(&auth.Metadata); errWrite == nil {
+				coreauth.NormalizeCredentialMetadata(auth.Metadata)
+				auth.ProxyURL, _ = auth.Metadata["proxy_url"].(string)
 			}
-			coreauth.NormalizeCredentialMetadata(auth.Metadata)
-			return os.WriteFile(dst, prepared, 0o600)
-		})
+		}
 	} else {
 		errWrite = h.writeAuthFileBytes(dst, data, auth)
 	}

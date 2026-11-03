@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
@@ -148,6 +149,54 @@ func TestNativeUploadProxyFileStorePreservesExactMetadata(t *testing.T) {
 		auth, ok := manager.GetByID("account.json")
 		if !ok || !auth.Disabled || auth.ProxyURL != "socks5h://127.0.0.1:41001" || auth.Attributes["priority"] != "37" {
 			t.Fatal("runtime account lost uploaded settings")
+		}
+	}
+}
+
+func TestNativeUploadProxyConcurrentManagerPersistence(t *testing.T) {
+	dir := t.TempDir()
+	store := sdkAuth.NewFileTokenStore()
+	store.SetBaseDir(dir)
+	manager := coreauth.NewManager(store, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: dir}, manager)
+	raw := []byte(`{"type":"codex","access_token":"fixture","proxy_url":"socks5h://127.0.0.1:41001","disabled":true}`)
+	if err := h.writeAuthFile(context.Background(), "account.json", raw); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	done := make(chan error, 2)
+	go func() {
+		<-start
+		for i := 0; i < 30; i++ {
+			if err := h.writeAuthFile(context.Background(), "account.json", raw); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	go func() {
+		<-start
+		for i := 0; i < 30; i++ {
+			auth, _ := manager.GetByID("account.json")
+			if _, err := manager.Update(context.Background(), auth); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	close(start)
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline.C:
+			t.Fatal("native upload and manager persistence failed to make progress")
 		}
 	}
 }
