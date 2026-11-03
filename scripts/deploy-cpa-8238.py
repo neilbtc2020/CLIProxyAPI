@@ -212,6 +212,25 @@ def verify_tool_choice(base, api_key, model):
     return results
 
 
+def isolated_canary_endpoint(previous, sockets):
+    # The proxy pool authorizes the production container's source IP. Reuse its
+    # network namespace with a separate internal port and isolated state mounts.
+    networks = previous['NetworkSettings']['Networks']
+    primary = networks.get(previous['HostConfig']['NetworkMode'], {})
+    address = primary.get('IPAddress') or next((n.get('IPAddress') for n in networks.values() if n.get('IPAddress')), None)
+    if not address:
+        raise RuntimeError('cannot resolve the approved service network for the candidate')
+    occupied = set()
+    for line in sockets.splitlines():
+        columns = line.split()
+        if len(columns) >= 4 and columns[3] == '0A':
+            occupied.add(int(columns[1].rsplit(':', 1)[-1], 16))
+    for port in range(18317, 18417):
+        if port not in occupied:
+            return port, f'http://{address}:{port}'
+    raise RuntimeError('no isolated candidate listener port is available')
+
+
 def verify_automatic_privacy(base, admin, canary):
     route = '/v0/management/plugins/' + PLUGIN
     status, _, policy = request(base, route + '/defaults', admin)
@@ -446,7 +465,9 @@ def main():
     manager.setdefault('automation', {})['enabled'] = False
     manager.setdefault('inspection_policy', {})['enabled'] = False
     manager.setdefault('default_policy', {})['enabled'] = False
-    canary_config.setdefault('server', {}).update({'host': '', 'port': 8317, 'tls': {'enable': False}})
+    candidate_port, candidate_base = isolated_canary_endpoint(previous, command(['docker', 'exec', CONTAINER, 'cat', '/proc/net/tcp', '/proc/net/tcp6']))
+    canary_config.setdefault('server', {}).update({'host': '', 'port': candidate_port, 'tls': {'enable': False}})
+    manager['management_base_url'] = f'http://127.0.0.1:{candidate_port}'
     canary_config.setdefault('oauth', {})['auth-dir'] = '/root/.cli-proxy-api'
     management = copy.deepcopy(config.get('management') or config.get('remote-management') or {})
     management['allow-remote'] = True
@@ -458,24 +479,26 @@ def main():
     candidate = 'cpa-8238-check-' + args.sha[:12]
     promoted = False
     report = {'sha': args.sha, 'plugin_sha': args.plugin_sha, 'image': image,
-              'plugin_version': plugin_version, 'plugin_sha256': plugin_hash, 'release_dir': str(release)}
+              'plugin_version': plugin_version, 'plugin_sha256': plugin_hash, 'release_dir': str(release),
+              'candidate_network': 'container:' + CONTAINER, 'candidate_port': candidate_port}
     try:
         print('Starting an isolated candidate with no production credentials', flush=True)
+        if inspect(CONTAINER)['Id'] != previous['Id']:
+            raise RuntimeError('target container changed during the candidate build')
         run_args = ['docker', 'run', '-d', '--name', candidate, '--label', 'cpa.release=' + args.sha,
-                    '--env-file', env_file, '-p', '127.0.0.1::8317']
+                    '--env-file', env_file, '--network', 'container:' + CONTAINER]
         for source, destination in [('config.yaml', '/CLIProxyAPI/config.yaml'), ('auths', '/root/.cli-proxy-api'),
                                     ('plugins', '/CLIProxyAPI/plugins'), ('logs', '/CLIProxyAPI/logs'), ('static', '/CLIProxyAPI/static')]:
             run_args += ['-v', str(canary / source) + ':' + destination]
         command([*run_args, image])
-        candidate_port = inspect(candidate)['NetworkSettings']['Ports']['8317/tcp'][0]['HostPort']
-        report['candidate'] = verify_service('http://127.0.0.1:' + candidate_port, admin, keys[0], args.sha, plugin_version)
-        report['candidate_upload'] = verify_native_upload_proxies('http://127.0.0.1:' + candidate_port, admin, canary / 'auths')
+        report['candidate'] = verify_service(candidate_base, admin, keys[0], args.sha, plugin_version)
+        report['candidate_upload'] = verify_native_upload_proxies(candidate_base, admin, canary / 'auths')
         if args.verify_auto_privacy:
             print('Verifying automatic privacy after isolated raw and multipart uploads', flush=True)
-            report['candidate_privacy'] = verify_automatic_privacy('http://127.0.0.1:' + candidate_port, admin, canary)
+            report['candidate_privacy'] = verify_automatic_privacy(candidate_base, admin, canary)
         command(['docker', 'logs', candidate], log=release / 'candidate-container.log')
         command(['docker', 'rm', '-f', candidate])
-        if file_hash(TARGET / 'config.yaml') != config_hash or file_hash(TARGET / 'compose.yaml') != compose_hash:
+        if inspect(CONTAINER)['Id'] != previous['Id'] or file_hash(TARGET / 'config.yaml') != config_hash or file_hash(TARGET / 'compose.yaml') != compose_hash:
             raise RuntimeError('target configuration changed during the candidate build')
         print('Candidate passed; promoting only the 8238 service', flush=True)
         promoted = True
